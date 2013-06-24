@@ -1,3 +1,4 @@
+// vim:ts=4:sw=4:et
 // Copyright 2012 Kamil Kisiel. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
@@ -35,24 +36,10 @@ import (
 	"database/sql"
 	"fmt"
 	"reflect"
-	"sort"
-	"strings"
-	"sync"
 )
 
-// A cache of fieldInfos to save reflecting every time. Inspried by encoding/xml
-var finfos map[reflect.Type]fieldInfo
-var finfoLock sync.RWMutex
-
-// tagName is the name of the tag to use on struct fields
-const tagName = "sql"
-
-// fieldInfo is a mapping of field tag values to their indices
-type fieldInfo map[string]int
-
-func init() {
-	finfos = make(map[reflect.Type]fieldInfo)
-}
+// Modified version of sqlstruct (http://go.pkgdoc.org/github.com/kisielk/sqlstruct)
+// Added support for anonymous fields/structs
 
 // Rows defines the interface of types that are scannable with the Scan function.
 // It is implemented by the sql.Rows type from the standard library
@@ -61,50 +48,60 @@ type Rows interface {
 	Columns() ([]string, error)
 }
 
-// getFieldInfo creates a fieldInfo for the provided type. Fields that are not tagged
-// with the "sql" tag and unexported fields are not included.
-func getFieldInfo(typ reflect.Type) fieldInfo {
-	finfoLock.RLock()
-	finfo, ok := finfos[typ]
-	finfoLock.RUnlock()
-	if ok {
-		return finfo
-	}
-
-	finfo = make(fieldInfo)
-
-	n := typ.NumField()
-	for i := 0; i < n; i++ {
-		f := typ.Field(i)
-		tag := f.Tag.Get(tagName)
-
-		// Skip unexported fields and those which are not tagged
-		if f.PkgPath != "" || tag == "" {
-			continue
-		}
-
-		finfo[tag] = i
-	}
-
-	finfoLock.Lock()
-	finfos[typ] = finfo
-	finfoLock.Unlock()
-
-	return finfo
+type Session struct {
+	finfos map[reflect.Type][]field
 }
 
-// Scan scans the next row from rows in to a struct pointed to by dest. The struct type
-// should have exported fields tagged with the "sql" tag. Columns from row which are not
-// mapped to any struct fields are ignored. Struct fields which have no matching column
-// in the result set are left unchanged.
-func Scan(dest interface{}, rows Rows) error {
+func NewSession() *Session {
+	return &Session{
+		finfos: make(map[reflect.Type][]field),
+	}
+}
+
+func (s *Session) Scan(dest interface{}, rows Rows) error {
 	destv := reflect.ValueOf(dest)
 	typ := destv.Type()
 
 	if typ.Kind() != reflect.Ptr || typ.Elem().Kind() != reflect.Struct {
 		panic(fmt.Errorf("dest must be pointer to struct; got %T", destv))
 	}
-	fieldInfo := getFieldInfo(typ.Elem())
+
+	valtyp := typ.Elem()
+	fields, ok := s.finfos[valtyp]
+	if !ok {
+		fields = typeFields(valtyp)
+		s.finfos[valtyp] = fields
+	}
+
+	return scan(destv, fields, rows)
+}
+
+func (s *Session) Columns(d interface{}) (names []string) {
+	v := reflect.ValueOf(d)
+	valtyp := v.Type()
+	fields, ok := s.finfos[valtyp]
+	if !ok {
+		fields = typeFields(valtyp)
+		s.finfos[valtyp] = fields
+	}
+	return columns(v, fields)
+}
+
+func (s *Session) MustScan(dest interface{}, rows Rows) {
+	if err := s.Scan(dest, rows); err != nil {
+		panic(err)
+	}
+}
+
+// Scan scans the next row from rows in to a struct pointed to by dest. The struct type
+// should have exported fields tagged with the "sql" tag. Columns from row which are not
+// mapped to any struct fields are ignored. Struct fields which have no matching column
+// in the result set are left unchanged.
+func scan(destv reflect.Value, fields []field, rows Rows) error {
+	finfos := make(map[string]field)
+	for _, f := range fields {
+		finfos[f.name] = f
+	}
 
 	elem := destv.Elem()
 	var values []interface{}
@@ -115,13 +112,14 @@ func Scan(dest interface{}, rows Rows) error {
 	}
 
 	for _, name := range cols {
-		idx, ok := fieldInfo[name]
+		fi, ok := finfos[name]
 		var v interface{}
 		if !ok {
+			fmt.Println("sqlstruct: no field for", name)
 			// There is no field mapped to this column so we discard it
 			v = &sql.RawBytes{}
 		} else {
-			v = elem.Field(idx).Addr().Interface()
+			v = elem.FieldByIndex(fi.index).Addr().Interface()
 		}
 		values = append(values, v)
 	}
@@ -133,17 +131,34 @@ func Scan(dest interface{}, rows Rows) error {
 	return nil
 }
 
-// Columns returns a string containing a sorted, comma-separated list of column names as defined
-// by the type s. s must be a struct that has exported fields tagged with the "sql" tag.
-func Columns(s interface{}) string {
-	v := reflect.ValueOf(s)
-	fields := getFieldInfo(v.Type())
-
-	names := make([]string, 0, len(fields))
-	for f := range fields {
-		names = append(names, f)
+func columns(v reflect.Value, fields []field) (names []string) {
+	names = make([]string, 0, len(fields))
+	for _, f := range fields {
+		names = append(names, f.ColName())
 	}
 
-	sort.Strings(names)
-	return strings.Join(names, ", ")
+	return
+}
+
+func Scan(dest interface{}, rows Rows) error {
+	destv := reflect.ValueOf(dest)
+	typ := destv.Type()
+
+	if typ.Kind() != reflect.Ptr || typ.Elem().Kind() != reflect.Struct {
+		panic(fmt.Errorf("dest must be pointer to struct; got %T", destv))
+	}
+
+	return scan(destv, typeFields(typ.Elem()), rows)
+}
+
+func Columns(s interface{}) (names []string) {
+	v := reflect.ValueOf(s)
+	fields := typeFields(v.Type())
+	return columns(v, fields)
+}
+
+func MustScan(dest interface{}, rows Rows) {
+	if err := Scan(dest, rows); err != nil {
+		panic(err)
+	}
 }
