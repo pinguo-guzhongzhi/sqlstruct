@@ -8,26 +8,26 @@ It adds support for embedded structs and adds a slightly different type info cac
 ## Basic use:
 ```go
 
-    // struct to represent a query from bar
-    type Rows struct {
+// struct to represent a query from bar
+type Rows struct {
 	Name string `sql:"name_attr"`
 	Id   int64  `sql:"@id"`
-        ...
-    }
+	...
+}
 
-    // Create a new session - this will also maintain a type info cache
-    // so it's beneficial for complex structs
-    s := sqlstruct.NewSession()
+// Create a new session - this will also maintain a type info cache
+// so it's beneficial for complex structs
+s := sqlstruct.NewSession()
 
-    r := Rows{}
-    db := sql.Open(...)
-    dbquery := "select * from bar"
+r := Rows{}
+db := sql.Open(...)
+dbquery := "select * from bar"
 
-    rows := mustQuery(db, dbquery)
-    for rows.Next() {
+rows := mustQuery(db, dbquery)
+for rows.Next() {
 	s.MustScan(&r, rows)
 	// do something with the Rows data in r
-    }
+}
 
 ```
 
