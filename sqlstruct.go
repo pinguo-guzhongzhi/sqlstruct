@@ -114,7 +114,7 @@ func scan(destv reflect.Value, fields []field, rows Rows) error {
 		fi, ok := finfos[name]
 		var v interface{}
 		if !ok {
-			fmt.Println("sqlstruct: no field for", name)
+			//fmt.Println("sqlstruct: no field for", name)
 			// There is no field mapped to this column so we discard it
 			v = &sql.RawBytes{}
 		} else {
